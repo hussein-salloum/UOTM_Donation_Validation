@@ -64,12 +64,13 @@ export async function POST(request: Request) {
       const ids = new Set(deliveries.map(f => normalizeId(f.attributes.lookup_id_number)).filter(Boolean));
 
       results[itemType] = cds
-        .map(f => ({
+        .map((f): Record<string, unknown> => ({
           ...f.attributes,
           phone_primary: exportPhone(f.attributes.phone_primary),
-          phone_spouse: exportPhone(f.attributes.phone_spouse)
+          phone_spouse: exportPhone(f.attributes.phone_spouse),
+          id_number: f.attributes.id_number
         }))
-        .filter(person => {
+        .filter((person: Record<string, unknown>) => {
           const p1 = normalizePhone(person.phone_primary);
           const p2 = normalizePhone(person.phone_spouse);
           const id = normalizeId(person.id_number);
