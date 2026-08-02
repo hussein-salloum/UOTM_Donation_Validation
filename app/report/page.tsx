@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 const MUNICIPALITIES = [
   "Aabbassiye","Aaitit","Ain Baal","Arzoun","Bafliye","Barich","Batouliye","Bazouriye","Bedias","Bestiyat","Biyad Sour","Borj ech Chmali","Borj Rahhal","Bourghliye","Chaaitiyeh","Chabriha","Chahour","Chehabiye","Debaal","Deir Aamess","Deir Kifa","Deir Qanoun en Nahr","Deir Qanoun Ras el Ain","Derdghaiya","El Kleile","Halloussiye","Hannaouiye","Hanniye","Haumeiri","Hay Thakana","Housh","Jal Baher","Jannata","Jbal el Botm","Jouaiya","Knisse Sour","Maachouq","Maarake","Maaroub","Mafraa Aabbassiye","Mahrouneh","Malkeit es Sahel","Mansouri","Masaken","Mazraat Mechref","Mjadel","Mokhayam Borj ech Chmali","Mokhayam El Bass","Mokhayam Jal Baher","Mokhayam Qasmiye","Mokhayam Rachidiye","Naffakhiye","Ouadi Jilou","Qana","Ras el Ain","Rechkananey","Rmadiyeh","Salaa","Sammaaiye","Sharnai","Siddiqine","Sour","Srifa","Tair Debba","Tair Filsay","Toura","Ynouh","Zabqine","Ziraa"
 ];
-const STATUS_GROUPS = ["Returnees", "Displaced"];
+const STATUS_GROUPS = ["All", "Returnees", "Displaced"];
 const ITEM_TYPES = ["Food parcel","hygiene equipment"];
 const NATIONALITIES = ["lebanese", "syrian", "palestinian", "other"];
 
@@ -13,6 +13,12 @@ const ITEM_CODE: Record<string, string> = { "Food parcel": "FP", "hygiene equipm
 
 type ReportRow = Record<string, unknown>;
 type ReportData = { totalPeople: number; results: Record<string, ReportRow[]> };
+
+function reportDateLabel(date = new Date()) {
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = date.toLocaleString("en-US", { month: "short" });
+  return `${day}${month}${date.getFullYear()}`;
+}
 
 function fileLabel(municipalities: string[], itemTypes: string[]) {
   const municipalityPart = municipalities.length === MUNICIPALITIES.length
@@ -26,7 +32,7 @@ function fileLabel(municipalities: string[], itemTypes: string[]) {
 export default function ReportPage() {
   const [municipalities, setMunicipalities] = useState<string[]>([]);
   const [nationalities, setNationalities] = useState<string[]>([]);
-  const [statuses, setStatuses] = useState<string[]>([]);
+  const [status, setStatus] = useState("All");
   const [itemTypes, setItemTypes] = useState<string[]>([]);
   const [startDate, setStartDate] = useState("2026-06-15");
   const [search, setSearch] = useState("");
@@ -60,7 +66,7 @@ export default function ReportPage() {
   }
 
   async function run(format: "json" | "xlsx" | "gap" = "json") {
-    if (!municipalities.length || !nationalities.length || !statuses.length || !itemTypes.length || !startDate) {
+    if (!municipalities.length || !nationalities.length || !status || !itemTypes.length || !startDate) {
       setError("Select at least one municipality, nationality, displacement status, item type, and a delivery start date.");
       return;
     }
@@ -71,7 +77,7 @@ export default function ReportPage() {
       const response = await fetch("/api/report", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ municipalities, nationalities, statuses, itemTypes, startDate, format })
+        body: JSON.stringify({ municipalities, nationalities, status, itemTypes, startDate, format })
       });
 
       if (!response.ok) {
@@ -84,7 +90,7 @@ export default function ReportPage() {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `${fileLabel(municipalities, itemTypes)}${format === "gap" ? " - GAP" : ""}.xlsx`;
+        link.download = `${fileLabel(municipalities, itemTypes)}${format === "gap" ? " - GAP" : ""} - ${reportDateLabel()}.xlsx`;
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -151,16 +157,21 @@ export default function ReportPage() {
           </div>
         </fieldset>
 
-        <fieldset className="wide">
-          <legend>Displacement status</legend>
-          <div className="checks">
-            {STATUS_GROUPS.map(value => <label key={value}><input type="checkbox" checked={statuses.includes(value)} onChange={() => toggle(value, statuses, setStatuses)} />{value}</label>)}
-          </div>
-        </fieldset>
+        <label className="wide">
+          Displacement status
+          <select value={status} onChange={event => setStatus(event.target.value)}>
+            {STATUS_GROUPS.map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
 
-        {statuses.includes("Returnees") && (
+        {status === "Returnees" && (
           <div className="warning wide">
-            Returnees use the rule origin municipality = current municipality for each selected municipality. Displaced records use current municipality only.
+            Returnees include returned, partially returned, remained at origin, and relocated. The report applies origin municipality = current municipality.
+          </div>
+        )}
+        {status === "All" && (
+          <div className="info wide">
+            All includes every displacement status. No displacement-status or origin-municipality rule is applied.
           </div>
         )}
 

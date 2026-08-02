@@ -24,6 +24,13 @@ function dateClause(field: string, start?: string) {
   return start ? [`${field} >= DATE '${esc(start)} 00:00:00'`] : [];
 }
 function safeFilePart(value: string) { return value.replace(/[<>:"/\\|?*\x00-\x1F]/g, "-").replace(/\s+/g, " ").trim(); }
+function reportDateLabel(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Beirut"
+  }).formatToParts(date);
+  const get = (type: string) => parts.find(part => part.type === type)?.value || "";
+  return `${get("day")}${get("month")}${get("year")}`;
+}
 function exportName(municipalities: string[], itemTypes: string[], suffix = "") {
   const municipalityPart = municipalities.length === 1
     ? municipalities[0]
@@ -33,9 +40,9 @@ function exportName(municipalities: string[], itemTypes: string[], suffix = "") 
         ? "All Municipalities"
         : `${municipalities.length} Municipalities`;
   const itemPart = itemTypes.map(type => itemCodes[type] || type).join("-");
-  return safeFilePart(`${municipalityPart} - ${itemPart}${suffix}`) + ".xlsx";
+  return safeFilePart(`${municipalityPart} - ${itemPart}${suffix} - ${reportDateLabel()}`) + ".xlsx";
 }
-function addMetadata(sheet: ExcelJS.Worksheet, municipalities: string[], statuses: string[], nationalities: string[], itemTypes: string[], startDate: string) {
+function addMetadata(sheet: ExcelJS.Worksheet, municipalities: string[], status: string, nationalities: string[], itemTypes: string[], startDate: string) {
   sheet.mergeCells("A1:F1");
   sheet.getCell("A1").value = "DONATION GAP REPORT";
   sheet.getCell("A1").font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
@@ -44,7 +51,7 @@ function addMetadata(sheet: ExcelJS.Worksheet, municipalities: string[], statuse
   sheet.getRow(1).height = 27;
   const meta = [
     ["Municipalities", municipalities.length > 8 ? `${municipalities.length} selected` : municipalities.join(", ")],
-    ["Displacement status", statuses.join(", ")],
+    ["Displacement status", status],
     ["Nationality", nationalities.join(", ")],
     ["Donation items", itemTypes.join(", ")],
     ["Delivery records from", startDate]
@@ -82,24 +89,24 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const municipalities: string[] = Array.isArray(body.municipalities) ? body.municipalities.map(String).filter(Boolean) : [];
-    const statuses: string[] = Array.isArray(body.statuses) ? body.statuses.map(String) : [];
+    const status = String(body.status || "All");
     const itemTypes: string[] = Array.isArray(body.itemTypes) ? body.itemTypes.map(String) : [];
     const nationalities: string[] = Array.isArray(body.nationalities) ? body.nationalities.map(String) : [];
     const startDate = String(body.startDate || "2026-06-15");
-    if (!municipalities.length || !nationalities.length || !statuses.length || !itemTypes.length || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    if (!municipalities.length || !nationalities.length || !["All", "Returnees", "Displaced"].includes(status) || !itemTypes.length || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
       return NextResponse.json({ error: "At least one municipality, nationality, status, item type, and a valid start date are required." }, { status: 400 });
     }
 
     const returneeStatuses = ["returned", "partially_returned", "remained_at_origin", "relocated"];
-    const groupClauses: string[] = [];
-    if (statuses.includes("Returnees")) {
-      groupClauses.push(`(${municipalities.map(value => `(current_municipality = '${esc(value)}' AND origin_municipality = '${esc(value)}')`).join(" OR ")}) AND displacement_status IN (${returneeStatuses.map(value => `'${value}'`).join(",")})`);
-    }
-    if (statuses.includes("Displaced")) {
-      groupClauses.push(`current_municipality IN (${municipalities.map(value => `'${esc(value)}'`).join(",")}) AND displacement_status = 'currently_displaced'`);
+    const municipalityIn = `current_municipality IN (${municipalities.map(value => `'${esc(value)}'`).join(",")})`;
+    let statusClause = municipalityIn;
+    if (status === "Returnees") {
+      statusClause = `(${municipalities.map(value => `(current_municipality = '${esc(value)}' AND origin_municipality = '${esc(value)}')`).join(" OR ")}) AND displacement_status IN (${returneeStatuses.map(value => `'${value}'`).join(",")})`;
+    } else if (status === "Displaced") {
+      statusClause = `${municipalityIn} AND displacement_status = 'currently_displaced'`;
     }
     const cdsWhere = [
-      `(${groupClauses.map(clause => `(${clause})`).join(" OR ")})`,
+      `(${statusClause})`,
       `nationality IN (${nationalities.map(value => `'${esc(value)}'`).join(",")})`
     ].join(" AND ");
 
@@ -132,11 +139,11 @@ export async function POST(request: Request) {
 
       if (body.format === "gap") {
         const summary = workbook.addWorksheet("GAP Summary", { views: [{ state: "frozen", ySplit: 9, xSplit: 1 }] });
-        addMetadata(summary, municipalities, statuses, nationalities, itemTypes, startDate);
+        addMetadata(summary, municipalities, status, nationalities, itemTypes, startDate);
 
         const hasFP = itemTypes.includes("Food parcel");
         const hasHK = itemTypes.includes("hygiene equipment");
-        const groups = statuses.filter(value => value === "Returnees" || value === "Displaced");
+        const groups = status === "All" ? ["Returnees", "Displaced"] : [status];
         const metricLabels = ["REGISTERED CDS", ...(hasFP ? ["FP RECEIVED", "FP GAP"] : []), ...(hasHK ? ["HK RECEIVED", "HK GAP"] : [])];
         const headerTop = 8;
         const headerBottom = 9;
@@ -228,7 +235,7 @@ export async function POST(request: Request) {
       } });
     }
 
-    return NextResponse.json({ municipalities, totalPeople: prepared.length, returneeOriginRule: statuses.includes("Returnees"), startDate, results });
+    return NextResponse.json({ municipalities, totalPeople: prepared.length, returneeOriginRule: status === "Returnees", status, startDate, results });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Report failed." }, { status: 500 });
   }
