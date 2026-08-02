@@ -3,25 +3,42 @@
 import { useMemo, useState } from "react";
 
 const MUNICIPALITIES = [
-  "Aabbassiye","Aaitit","Aalma ech Chaab","Ain Baal","Arzoun","Bafliye","Barich","Batouliye","Bazouriye","Bedias","Bestiyat","Biyad Sour","Borj ech Chmali","Borj Rahhal","Bourghliye","Boustane Sour","Chaaitiyeh","Chabriha","Chahour","Chamaa","Chehabiye","Chihine","Debaal","Deir Aamess","Deir Kifa","Deir Qanoun en Nahr","Derdghaiya","Dhaira","El Biyada","El Kleile","Halloussiye","Hannaouiye","Hanniye","Haumeiri","Jannata","Jbal el Botm","Jebbain","Jouaiya","Knisse Sour","Maachouq","Maarake","Maaroub","Mahrouneh","Majdel Zoun","Malkeit es Sahel","Mansouri","Marouahine","Mazraat Mechref","Mjadel","Naffakhiye","Naqoura","Ouadi Jilou","Qana","Ras el Ain","Rechkananey","Rmadiyeh","Salaa","Sammaaiye","Siddiqine","Sour","Srifa","Tair Debba","Tair Filsay","Tair Harfa","Toura","Yarine","Ynouh","Zabqine","Zalloutiye","Ziraa","Masaken","Jal Baher","Hay Thakana","Housh","Mafraa Aabbassiye","Mokhayam Borj ech Chmali","Mokhayam Rachidiye","Mokhayam Jal Baher","Mokhayam El Bass","Mokhayam Qasmiye","Jal Baher Nahr El Samer","Kadmus","Deir Qanoun Ras el Ain","Sharnai"
+  "Aabbassiye","Aaitit","Ain Baal","Arzoun","Bafliye","Barich","Batouliye","Bazouriye","Bedias","Bestiyat","Biyad Sour","Borj ech Chmali","Borj Rahhal","Bourghliye","Chaaitiyeh","Chabriha","Chahour","Chehabiye","Debaal","Deir Aamess","Deir Kifa","Deir Qanoun en Nahr","Deir Qanoun Ras el Ain","Derdghaiya","El Kleile","Halloussiye","Hannaouiye","Hanniye","Haumeiri","Hay Thakana","Housh","Jal Baher","Jannata","Jbal el Botm","Jouaiya","Knisse Sour","Maachouq","Maarake","Maaroub","Mafraa Aabbassiye","Mahrouneh","Malkeit es Sahel","Mansouri","Masaken","Mazraat Mechref","Mjadel","Mokhayam Borj ech Chmali","Mokhayam El Bass","Mokhayam Jal Baher","Mokhayam Qasmiye","Mokhayam Rachidiye","Naffakhiye","Ouadi Jilou","Qana","Ras el Ain","Rechkananey","Rmadiyeh","Salaa","Sammaaiye","Sharnai","Siddiqine","Sour","Srifa","Tair Debba","Tair Filsay","Toura","Ynouh","Zabqine","Ziraa"
 ];
-const STATUSES = ["returned","currently_displaced","partially_returned","remained_at_origin","relocated"];
+const STATUS_GROUPS = ["Returnees", "Displaced"];
 const ITEM_TYPES = ["Food parcel","hygiene equipment"];
 const NATIONALITIES = ["lebanese", "syrian", "palestinian", "other"];
-const START_DATE = "2026-06-15";
+
+const ITEM_CODE: Record<string, string> = { "Food parcel": "FP", "hygiene equipment": "HK" };
 
 type ReportRow = Record<string, unknown>;
 type ReportData = { totalPeople: number; results: Record<string, ReportRow[]> };
 
+function fileLabel(municipalities: string[], itemTypes: string[]) {
+  const municipalityPart = municipalities.length === MUNICIPALITIES.length
+    ? "All Municipalities"
+    : municipalities.length <= 3
+      ? municipalities.join(" - ")
+      : `${municipalities.length} Municipalities`;
+  return `${municipalityPart} - ${itemTypes.map(type => ITEM_CODE[type] || type).join("-")}`;
+}
+
 export default function ReportPage() {
-  const [municipality, setMunicipality] = useState("");
+  const [municipalities, setMunicipalities] = useState<string[]>([]);
   const [nationalities, setNationalities] = useState<string[]>([]);
   const [statuses, setStatuses] = useState<string[]>([]);
   const [itemTypes, setItemTypes] = useState<string[]>([]);
+  const [startDate, setStartDate] = useState("2026-06-15");
   const [search, setSearch] = useState("");
+  const [municipalitySearch, setMunicipalitySearch] = useState("");
   const [data, setData] = useState<ReportData | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const visibleMunicipalities = useMemo(() => {
+    const term = municipalitySearch.trim().toLowerCase();
+    return term ? MUNICIPALITIES.filter(value => value.toLowerCase().includes(term)) : MUNICIPALITIES;
+  }, [municipalitySearch]);
 
   const counts = useMemo(
     () => data ? Object.entries(data.results).map(([key, value]) => [key, value.length] as const) : [],
@@ -42,9 +59,9 @@ export default function ReportPage() {
     setter(list.includes(value) ? list.filter(item => item !== value) : [...list, value]);
   }
 
-  async function run(format = "json") {
-    if (!municipality || !nationalities.length || !statuses.length || !itemTypes.length) {
-      setError("Select municipality, at least one nationality, at least one displacement status, and at least one item type.");
+  async function run(format: "json" | "xlsx" | "gap" = "json") {
+    if (!municipalities.length || !nationalities.length || !statuses.length || !itemTypes.length || !startDate) {
+      setError("Select at least one municipality, nationality, displacement status, item type, and a delivery start date.");
       return;
     }
 
@@ -54,7 +71,7 @@ export default function ReportPage() {
       const response = await fetch("/api/report", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ municipality, nationalities, statuses, itemTypes, startDate: START_DATE, format })
+        body: JSON.stringify({ municipalities, nationalities, statuses, itemTypes, startDate, format })
       });
 
       if (!response.ok) {
@@ -62,13 +79,15 @@ export default function ReportPage() {
         throw new Error(payload.error || "Report failed.");
       }
 
-      if (format === "xlsx") {
+      if (format !== "json") {
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `not-received-${municipality}.xlsx`;
+        link.download = `${fileLabel(municipalities, itemTypes)}${format === "gap" ? " - GAP" : ""}.xlsx`;
+        document.body.appendChild(link);
         link.click();
+        link.remove();
         URL.revokeObjectURL(url);
       } else {
         setData(await response.json());
@@ -86,7 +105,7 @@ export default function ReportPage() {
       <header>
         <div>
           <h1>Donation Validation Report</h1>
-          <p>Identify CDS records that have not received selected donation items.</p>
+          <p>Validate received donations and export operational gap lists.</p>
         </div>
         <button className="secondary compact" onClick={async () => { await fetch("/api/logout", { method: "POST" }); location.href = "/"; }}>
           Log out
@@ -94,72 +113,61 @@ export default function ReportPage() {
       </header>
 
       <section className="card formgrid">
-        <label>
-          Current municipality
-          <select value={municipality} onChange={event => setMunicipality(event.target.value)}>
-            <option value="">Select municipality</option>
-            {MUNICIPALITIES.map(value => <option key={value} value={value}>{value}</option>)}
-          </select>
-        </label>
-
-        <fieldset>
-          <legend>Nationality</legend>
-          <div className="checks">
-            <label>
-              <input
-                type="checkbox"
-                checked={nationalities.length === NATIONALITIES.length}
-                onChange={() => setNationalities(nationalities.length === NATIONALITIES.length ? [] : [...NATIONALITIES])}
-              />
-              All
-            </label>
-            {NATIONALITIES.map(value => (
+        <fieldset className="municipality-field">
+          <legend>Current municipality</legend>
+          <input className="mini-search" type="search" placeholder="Search municipality…" value={municipalitySearch} onChange={event => setMunicipalitySearch(event.target.value)} />
+          <div className="select-tools">
+            <button type="button" className="text-action" onClick={() => setMunicipalities([...MUNICIPALITIES])}>Select all</button>
+            <button type="button" className="text-action" onClick={() => setMunicipalities([])}>Clear</button>
+            <span>{municipalities.length} selected</span>
+          </div>
+          <div className="municipality-list">
+            {visibleMunicipalities.map(value => (
               <label key={value}>
-                <input type="checkbox" checked={nationalities.includes(value)} onChange={() => toggle(value, nationalities, setNationalities)} />
+                <input type="checkbox" checked={municipalities.includes(value)} onChange={() => toggle(value, municipalities, setMunicipalities)} />
                 {value}
               </label>
             ))}
           </div>
         </fieldset>
 
+        <fieldset>
+          <legend>Nationality</legend>
+          <div className="checks">
+            <label><input type="checkbox" checked={nationalities.length === NATIONALITIES.length} onChange={() => setNationalities(nationalities.length === NATIONALITIES.length ? [] : [...NATIONALITIES])} />All</label>
+            {NATIONALITIES.map(value => <label key={value}><input type="checkbox" checked={nationalities.includes(value)} onChange={() => toggle(value, nationalities, setNationalities)} />{value}</label>)}
+          </div>
+        </fieldset>
+
         <label>
           Delivery records from
-          <input type="date" value={START_DATE} readOnly disabled />
+          <input type="date" value={startDate} onChange={event => setStartDate(event.target.value)} />
         </label>
 
         <fieldset>
           <legend>Donation item types</legend>
           <div className="checks">
-            {ITEM_TYPES.map(value => (
-              <label key={value}>
-                <input type="checkbox" checked={itemTypes.includes(value)} onChange={() => toggle(value, itemTypes, setItemTypes)} />
-                {value}
-              </label>
-            ))}
+            {ITEM_TYPES.map(value => <label key={value}><input type="checkbox" checked={itemTypes.includes(value)} onChange={() => toggle(value, itemTypes, setItemTypes)} />{value}</label>)}
           </div>
         </fieldset>
 
         <fieldset className="wide">
           <legend>Displacement status</legend>
           <div className="checks">
-            {STATUSES.map(value => (
-              <label key={value}>
-                <input type="checkbox" checked={statuses.includes(value)} onChange={() => toggle(value, statuses, setStatuses)} />
-                {value}
-              </label>
-            ))}
+            {STATUS_GROUPS.map(value => <label key={value}><input type="checkbox" checked={statuses.includes(value)} onChange={() => toggle(value, statuses, setStatuses)} />{value}</label>)}
           </div>
         </fieldset>
 
-        {!statuses.includes("currently_displaced") && statuses.length > 0 && (
+        {statuses.includes("Returnees") && (
           <div className="warning wide">
-            Currently displaced is not selected. CDS records will be limited to people whose origin municipality and current municipality are both {municipality || "the selected municipality"}.
+            Returnees use the rule origin municipality = current municipality for each selected municipality. Displaced records use current municipality only.
           </div>
         )}
 
         <div className="actions">
           <button disabled={loading} onClick={() => run()}>{loading ? "Checking…" : "Get Report"}</button>
-          <button className="secondary" disabled={!data || loading} onClick={() => run("xlsx")}>Export Excel</button>
+          <button className="secondary" disabled={loading} onClick={() => run("xlsx")}>Export Excel</button>
+          <button className="gap-button" disabled={loading} onClick={() => run("gap")}>GAP</button>
         </div>
         {error && <div className="error wide">{error}</div>}
       </section>
@@ -169,32 +177,18 @@ export default function ReportPage() {
           <div className="resultsbar">
             <div className="summary">
               <div className="card metric"><span>CDS checked</span><strong>{data.totalPeople}</strong></div>
-              {counts.map(([key, value]) => (
-                <div className="card metric" key={key}><span>Not received: {key}</span><strong>{value}</strong></div>
-              ))}
+              {counts.map(([key, value]) => <div className="card metric" key={key}><span>Gap: {key}</span><strong>{value}</strong></div>)}
             </div>
-            <label className="searchbox">
-              Search results
-              <input type="search" placeholder="Name, phone, ID, status…" value={search} onChange={event => setSearch(event.target.value)} />
-            </label>
+            <label className="searchbox">Search results<input type="search" placeholder="Name, municipality, phone, ID…" value={search} onChange={event => setSearch(event.target.value)} /></label>
           </div>
 
           {Object.entries(filteredResults).map(([type, rows]) => (
             <div className="card tablecard" key={type}>
-              <div className="tabletitle">
-                <h2>{type}</h2>
-                <span>{rows.length} shown / {data.results[type].length} total</span>
-              </div>
+              <div className="tabletitle"><h2>{type}</h2><span>{rows.length} shown / {data.results[type].length} total</span></div>
               <div className="tablewrap">
                 <table>
                   <thead><tr><th>Full name</th><th>Nationality</th><th>Phone</th><th>Spouse phone</th><th>ID number</th><th>Status</th><th>Origin municipality</th><th>Current municipality</th><th>HH size</th></tr></thead>
-                  <tbody>
-                    {rows.slice(0, 500).map((row, index) => (
-                      <tr key={String(row.objectid ?? index)}>
-                        <td>{String(row.full_name ?? "")}</td><td>{String(row.nationality ?? "")}</td><td>{String(row.phone_primary ?? "")}</td><td>{String(row.phone_spouse ?? "")}</td><td>{String(row.id_number ?? "")}</td><td>{String(row.displacement_status ?? "")}</td><td>{String(row.origin_municipality ?? "")}</td><td>{String(row.current_municipality ?? "")}</td><td>{String(row.household_size ?? "")}</td>
-                      </tr>
-                    ))}
-                  </tbody>
+                  <tbody>{rows.slice(0, 500).map((row, index) => <tr key={`${String(row.objectid ?? index)}-${index}`}><td>{String(row.full_name ?? "")}</td><td>{String(row.nationality ?? "")}</td><td>{String(row.phone_primary ?? "")}</td><td>{String(row.phone_spouse ?? "")}</td><td>{String(row.id_number ?? "")}</td><td>{String(row.displacement_status ?? "")}</td><td>{String(row.origin_municipality ?? "")}</td><td>{String(row.current_municipality ?? "")}</td><td>{String(row.household_size ?? "")}</td></tr>)}</tbody>
                 </table>
               </div>
               {rows.length > 500 && <p className="tablehint">Showing the first 500 matching rows. Excel contains all rows.</p>}

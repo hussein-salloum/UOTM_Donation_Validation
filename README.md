@@ -48,3 +48,12 @@ Authentication errors identify the failing account as `CDS` or `Delivery`, the u
 - When `currently_displaced` is not among the selected statuses, the CDS query automatically requires both `current_municipality` and `origin_municipality` to equal the selected municipality.
 - The report page displays a red warning whenever this municipality rule is active.
 - The preview table includes both origin and current municipality.
+
+## GAP workflow
+
+- Current municipality supports multiple selections and **Select all**.
+- Delivery start date defaults to `2026-06-15` and can be changed by the user.
+- **GAP** creates a styled workbook with a municipality summary and separate FP/HK detail sheets.
+- Phone matching ignores `+961`, `00961`, `961`, spaces, and leading zero formatting differences.
+- ID matching ignores leading zeros, so `00001234` matches `1234`.
+- Export filenames use municipality selection and item abbreviations, for example `Sour - FP-HK - GAP.xlsx`.

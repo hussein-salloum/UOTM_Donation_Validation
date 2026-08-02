@@ -3,6 +3,7 @@ import ExcelJS from "exceljs";
 import { cdsConfig, deliveryConfig, queryAll } from "../../../lib/arcgis";
 
 const fields = ["objectid","full_name","mother_name","birth_date","gender","spouse_name","nationality","phone_primary","phone_spouse","id_type","id_number","origin_municipality","origin_home_damage","displacement_status","current_municipality","household_size"];
+const itemCodes: Record<string, string> = { "Food parcel": "FP", "hygiene equipment": "HK" };
 
 function esc(value: string) { return value.replace(/'/g, "''"); }
 function normalizePhone(value: unknown) {
@@ -10,7 +11,7 @@ function normalizePhone(value: unknown) {
   if (!s) return "";
   if (s.startsWith("00961")) s = s.slice(5);
   else if (s.startsWith("961")) s = s.slice(3);
-  if (s.startsWith("0")) s = s.slice(1);
+  s = s.replace(/^0+/, "");
   return s;
 }
 function normalizeId(value: unknown) {
@@ -18,85 +19,216 @@ function normalizeId(value: unknown) {
   if (!cleaned) return "";
   return cleaned.replace(/^0+/, "") || "0";
 }
-function exportPhone(value: unknown) {
-  return String(value ?? "").trim().replace(/^\+/, "");
+function exportPhone(value: unknown) { return String(value ?? "").trim().replace(/^\+/, ""); }
+function dateClause(field: string, start?: string) {
+  return start ? [`${field} >= DATE '${esc(start)} 00:00:00'`] : [];
 }
-function dateClause(field: string, start?: string, end?: string) {
-  const parts: string[] = [];
-  if (start) parts.push(`${field} >= DATE '${esc(start)} 00:00:00'`);
-  if (end) parts.push(`${field} <= DATE '${esc(end)} 23:59:59'`);
-  return parts;
+function safeFilePart(value: string) { return value.replace(/[<>:"/\\|?*\x00-\x1F]/g, "-").replace(/\s+/g, " ").trim(); }
+function exportName(municipalities: string[], itemTypes: string[], suffix = "") {
+  const municipalityPart = municipalities.length === 1
+    ? municipalities[0]
+    : municipalities.length <= 3
+      ? municipalities.join(" - ")
+      : municipalities.length > 70
+        ? "All Municipalities"
+        : `${municipalities.length} Municipalities`;
+  const itemPart = itemTypes.map(type => itemCodes[type] || type).join("-");
+  return safeFilePart(`${municipalityPart} - ${itemPart}${suffix}`) + ".xlsx";
+}
+function addMetadata(sheet: ExcelJS.Worksheet, municipalities: string[], statuses: string[], nationalities: string[], itemTypes: string[], startDate: string) {
+  sheet.mergeCells("A1:F1");
+  sheet.getCell("A1").value = "DONATION GAP REPORT";
+  sheet.getCell("A1").font = { bold: true, size: 16, color: { argb: "FFFFFFFF" } };
+  sheet.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
+  sheet.getCell("A1").alignment = { horizontal: "center", vertical: "middle" };
+  sheet.getRow(1).height = 27;
+  const meta = [
+    ["Municipalities", municipalities.length > 8 ? `${municipalities.length} selected` : municipalities.join(", ")],
+    ["Displacement status", statuses.join(", ")],
+    ["Nationality", nationalities.join(", ")],
+    ["Donation items", itemTypes.join(", ")],
+    ["Delivery records from", startDate]
+  ];
+  meta.forEach((row, index) => {
+    const r = index + 2;
+    sheet.getCell(r, 1).value = row[0];
+    sheet.getCell(r, 1).font = { bold: true, color: { argb: "FF334155" } };
+    sheet.getCell(r, 2).value = row[1];
+    sheet.mergeCells(r, 2, r, 6);
+  });
+}
+function styleDetailSheet(sheet: ExcelJS.Worksheet, title: string) {
+  sheet.insertRow(1, [title]);
+  sheet.mergeCells(1, 1, 1, fields.length);
+  const titleCell = sheet.getCell(1, 1);
+  titleCell.font = { bold: true, size: 15, color: { argb: "FFFFFFFF" } };
+  titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFB42318" } };
+  titleCell.alignment = { horizontal: "center", vertical: "middle" };
+  sheet.getRow(1).height = 26;
+  const header = sheet.getRow(2);
+  header.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
+  header.alignment = { horizontal: "center", vertical: "middle" };
+  header.height = 23;
+  sheet.views = [{ state: "frozen", ySplit: 2 }];
+  sheet.autoFilter = { from: "A2", to: `${String.fromCharCode(64 + fields.length)}2` };
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber > 2 && rowNumber % 2 === 1) row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF3F6FA" } };
+    row.alignment = { vertical: "middle" };
+  });
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const municipality = String(body.municipality || "");
-    const statuses: string[] = Array.isArray(body.statuses) ? body.statuses : [];
-    const itemTypes: string[] = Array.isArray(body.itemTypes) ? body.itemTypes : [];
+    const municipalities: string[] = Array.isArray(body.municipalities) ? body.municipalities.map(String).filter(Boolean) : [];
+    const statuses: string[] = Array.isArray(body.statuses) ? body.statuses.map(String) : [];
+    const itemTypes: string[] = Array.isArray(body.itemTypes) ? body.itemTypes.map(String) : [];
     const nationalities: string[] = Array.isArray(body.nationalities) ? body.nationalities.map(String) : [];
-    if (!municipality || !nationalities.length || !statuses.length || !itemTypes.length) {
-      return NextResponse.json({ error: "Municipality, at least one nationality, at least one status, and at least one item type are required." }, { status: 400 });
+    const startDate = String(body.startDate || "2026-06-15");
+    if (!municipalities.length || !nationalities.length || !statuses.length || !itemTypes.length || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+      return NextResponse.json({ error: "At least one municipality, nationality, status, item type, and a valid start date are required." }, { status: 400 });
     }
 
-    const municipalityFilters = [`current_municipality = '${esc(municipality)}'`];
-    const sameOriginAndCurrent = !statuses.includes("currently_displaced");
-    if (sameOriginAndCurrent) {
-      municipalityFilters.push(`origin_municipality = '${esc(municipality)}'`);
+    const returneeStatuses = ["returned", "partially_returned", "remained_at_origin", "relocated"];
+    const groupClauses: string[] = [];
+    if (statuses.includes("Returnees")) {
+      groupClauses.push(`(${municipalities.map(value => `(current_municipality = '${esc(value)}' AND origin_municipality = '${esc(value)}')`).join(" OR ")}) AND displacement_status IN (${returneeStatuses.map(value => `'${value}'`).join(",")})`);
     }
-
+    if (statuses.includes("Displaced")) {
+      groupClauses.push(`current_municipality IN (${municipalities.map(value => `'${esc(value)}'`).join(",")}) AND displacement_status = 'currently_displaced'`);
+    }
     const cdsWhere = [
-      ...municipalityFilters,
-      `nationality IN (${nationalities.map(value => `'${esc(value)}'`).join(",")})`,
-      `displacement_status IN (${statuses.map(s => `'${esc(s)}'`).join(",")})`
+      `(${groupClauses.map(clause => `(${clause})`).join(" OR ")})`,
+      `nationality IN (${nationalities.map(value => `'${esc(value)}'`).join(",")})`
     ].join(" AND ");
 
     const cds = await queryAll(cdsConfig(), { where: cdsWhere, outFields: fields.join(",") });
+    const prepared = cds.map((f): Record<string, unknown> => ({
+      ...f.attributes,
+      phone_primary: exportPhone(f.attributes.phone_primary),
+      phone_spouse: exportPhone(f.attributes.phone_spouse),
+      id_number: f.attributes.id_number
+    }));
     const results: Record<string, Record<string, unknown>[]> = {};
 
     for (const itemType of itemTypes) {
-      const deliveryWhere = [
-        `type_items = '${esc(itemType)}'`,
-        ...dateClause("delivered_date", "2026-06-15")
-      ].join(" AND ");
+      const deliveryWhere = [`type_items = '${esc(itemType)}'`, ...dateClause("delivered_date", startDate)].join(" AND ");
       const deliveries = await queryAll(deliveryConfig(), { where: deliveryWhere, outFields: "lookup_phone_nbr,lookup_id_number,type_items,delivered_date" });
       const phones = new Set(deliveries.map(f => normalizePhone(f.attributes.lookup_phone_nbr)).filter(Boolean));
       const ids = new Set(deliveries.map(f => normalizeId(f.attributes.lookup_id_number)).filter(Boolean));
-
-      results[itemType] = cds
-        .map((f): Record<string, unknown> => ({
-          ...f.attributes,
-          phone_primary: exportPhone(f.attributes.phone_primary),
-          phone_spouse: exportPhone(f.attributes.phone_spouse),
-          id_number: f.attributes.id_number
-        }))
-        .filter((person: Record<string, unknown>) => {
-          const p1 = normalizePhone(person.phone_primary);
-          const p2 = normalizePhone(person.phone_spouse);
-          const id = normalizeId(person.id_number);
-          return !((p1 && phones.has(p1)) || (p2 && phones.has(p2)) || (id && ids.has(id)));
-        });
+      results[itemType] = prepared.filter(person => {
+        const p1 = normalizePhone(person.phone_primary);
+        const p2 = normalizePhone(person.phone_spouse);
+        const id = normalizeId(person.id_number);
+        return !((p1 && phones.has(p1)) || (p2 && phones.has(p2)) || (id && ids.has(id)));
+      });
     }
 
-    if (body.format === "xlsx") {
+    if (body.format === "xlsx" || body.format === "gap") {
       const workbook = new ExcelJS.Workbook();
-      for (const [itemType, rows] of Object.entries(results)) {
-        const sheet = workbook.addWorksheet(itemType.slice(0, 31).replace(/[\\/*?:\[\]]/g, "-"));
-        sheet.columns = fields.map(field => ({ header: field, key: field, width: Math.max(14, field.length + 2) }));
-        rows.forEach(row => sheet.addRow(row));
-        for (const field of ["phone_primary", "phone_spouse", "id_number"]) {
-          const column = sheet.getColumn(field);
-          column.numFmt = "@";
+      workbook.creator = "Donation Validation Portal";
+      workbook.created = new Date();
+
+      if (body.format === "gap") {
+        const summary = workbook.addWorksheet("GAP Summary", { views: [{ state: "frozen", ySplit: 9, xSplit: 1 }] });
+        addMetadata(summary, municipalities, statuses, nationalities, itemTypes, startDate);
+
+        const hasFP = itemTypes.includes("Food parcel");
+        const hasHK = itemTypes.includes("hygiene equipment");
+        const groups = statuses.filter(value => value === "Returnees" || value === "Displaced");
+        const metricLabels = ["REGISTERED CDS", ...(hasFP ? ["FP RECEIVED", "FP GAP"] : []), ...(hasHK ? ["HK RECEIVED", "HK GAP"] : [])];
+        const headerTop = 8;
+        const headerBottom = 9;
+        let column = 2;
+
+        summary.mergeCells(headerTop, 1, headerBottom, 1);
+        summary.getCell(headerTop, 1).value = "CURRENT MUNICIPALITY";
+        for (const group of groups) {
+          const startCol = column;
+          const endCol = column + metricLabels.length - 1;
+          summary.mergeCells(headerTop, startCol, headerTop, endCol);
+          summary.getCell(headerTop, startCol).value = group.toUpperCase();
+          metricLabels.forEach((label, index) => { summary.getCell(headerBottom, startCol + index).value = label; });
+          column = endCol + 1;
         }
-        sheet.getRow(1).font = { bold: true };
-        sheet.views = [{ state: "frozen", ySplit: 1 }];
-        sheet.autoFilter = { from: "A1", to: `${String.fromCharCode(64 + fields.length)}1` };
+        if (hasFP) { summary.mergeCells(headerTop, column, headerBottom, column); summary.getCell(headerTop, column).value = "TOTAL FP GAP"; column++; }
+        if (hasHK) { summary.mergeCells(headerTop, column, headerBottom, column); summary.getCell(headerTop, column).value = "TOTAL HK GAP"; column++; }
+        const lastCol = column - 1;
+
+        for (const rowNo of [headerTop, headerBottom]) {
+          const row = summary.getRow(rowNo);
+          row.font = { bold: true, color: { argb: "FFFFFFFF" } };
+          row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
+          row.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+          row.height = rowNo === headerTop ? 25 : 34;
+        }
+
+        const isGroup = (row: Record<string, unknown>, group: string) => group === "Displaced"
+          ? String(row.displacement_status ?? "") === "currently_displaced"
+          : returneeStatuses.includes(String(row.displacement_status ?? ""));
+
+        const buildRow = (municipality: string | null) => {
+          const values: (string | number)[] = [municipality ?? "TOTAL"];
+          let totalFpGap = 0;
+          let totalHkGap = 0;
+          for (const group of groups) {
+            const registeredRows = prepared.filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group));
+            values.push(registeredRows.length);
+            if (hasFP) {
+              const gap = results["Food parcel"].filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group)).length;
+              values.push(registeredRows.length - gap, gap);
+              totalFpGap += gap;
+            }
+            if (hasHK) {
+              const gap = results["hygiene equipment"].filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group)).length;
+              values.push(registeredRows.length - gap, gap);
+              totalHkGap += gap;
+            }
+          }
+          if (hasFP) values.push(totalFpGap);
+          if (hasHK) values.push(totalHkGap);
+          return values;
+        };
+
+        summary.addRow(buildRow(null));
+        municipalities.forEach(municipality => summary.addRow(buildRow(municipality)));
+        const totalExcelRow = headerBottom + 1;
+        summary.getRow(totalExcelRow).font = { bold: true, color: { argb: "FF1F2937" } };
+        summary.getRow(totalExcelRow).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD9EAF7" } };
+        for (let rowNo = totalExcelRow + 1; rowNo <= totalExcelRow + municipalities.length; rowNo++) {
+          if ((rowNo - totalExcelRow) % 2 === 0) summary.getRow(rowNo).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F7FA" } };
+        }
+        summary.getColumn(1).width = 28;
+        for (let col = 2; col <= lastCol; col++) summary.getColumn(col).width = 15;
+        summary.autoFilter = { from: { row: headerBottom, column: 1 }, to: { row: totalExcelRow + municipalities.length, column: lastCol } };
+        summary.eachRow((row, rowNumber) => {
+          if (rowNumber >= headerTop) row.eachCell({ includeEmpty: true }, cell => {
+            cell.border = { bottom: { style: "thin", color: { argb: "FFD8DEE7" } }, right: { style: "thin", color: { argb: "FFE5E7EB" } } };
+            cell.alignment = { ...cell.alignment, vertical: "middle" };
+          });
+        });
       }
+
+      if (body.format === "xlsx") for (const [itemType, rows] of Object.entries(results)) {
+        const code = itemCodes[itemType] || itemType;
+        const sheetName = `${code} GAP`.slice(0, 31).replace(/[\\/*?:\[\]]/g, "-");
+        const sheet = workbook.addWorksheet(sheetName);
+        sheet.columns = fields.map(field => ({ header: field, key: field, width: field.includes("municipality") ? 24 : Math.max(14, Math.min(24, field.length + 3)) }));
+        rows.forEach(row => sheet.addRow(row));
+        for (const field of ["phone_primary", "phone_spouse", "id_number"]) sheet.getColumn(field).numFmt = "@";
+        styleDetailSheet(sheet, `${code} GAP — NOT RECEIVED`);
+      }
+
       const buffer = await workbook.xlsx.writeBuffer();
-      return new NextResponse(buffer, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="not-received-${municipality}.xlsx"` } });
+      const filename = exportName(municipalities, itemTypes, body.format === "gap" ? " - GAP" : "");
+      return new NextResponse(buffer, { headers: {
+        "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
+      } });
     }
 
-    return NextResponse.json({ municipality, totalPeople: cds.length, sameOriginAndCurrent, results });
+    return NextResponse.json({ municipalities, totalPeople: prepared.length, returneeOriginRule: statuses.includes("Returnees"), startDate, results });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Report failed." }, { status: 500 });
   }

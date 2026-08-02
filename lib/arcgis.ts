@@ -104,7 +104,12 @@ export async function queryAll(config: LayerConfig, params: Record<string, strin
       resultRecordCount: String(pageSize),
       ...params
     });
-    const response = await fetch(`${config.url}/query?${search}`, { cache: "no-store" });
+    const response = await fetch(`${config.url}/query`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: search,
+      cache: "no-store"
+    });
     const data = await response.json();
     if (!response.ok || data.error) {
       const details = Array.isArray(data?.error?.details) ? data.error.details.filter(Boolean).join(" | ") : "";
