@@ -3,7 +3,16 @@ import ExcelJS from "exceljs";
 import { cdsConfig, deliveryConfig, queryAll } from "../../../lib/arcgis";
 
 const fields = ["objectid","full_name","mother_name","birth_date","gender","spouse_name","nationality","phone_primary","phone_spouse","id_type","id_number","origin_municipality","origin_home_damage","displacement_status","current_municipality","household_size"];
-const itemCodes: Record<string, string> = { "Food parcel": "FP", "hygiene equipment": "HK" };
+const itemCodes: Record<string, string> = {
+  "Food parcel": "FP",
+  "hygiene equipment": "HK",
+  "Mattresses/ sleeping bag": "MSB",
+  "Pillows": "PIL",
+  "Kitchen Kit": "KK",
+  "Summer Bedsheet": "SB"
+};
+const allowedItemTypes = Object.keys(itemCodes);
+const displacedOnlyItems = new Set(["Mattresses/ sleeping bag", "Pillows", "Kitchen Kit", "Summer Bedsheet"]);
 
 function esc(value: string) { return value.replace(/'/g, "''"); }
 function normalizePhone(value: unknown) {
@@ -20,6 +29,9 @@ function normalizeId(value: unknown) {
   return cleaned.replace(/^0+/, "") || "0";
 }
 function exportPhone(value: unknown) { return String(value ?? "").trim().replace(/^\+/, ""); }
+function normalizeDamage(value: unknown) {
+  return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
 function dateClause(field: string, start?: string) {
   return start ? [`${field} >= DATE '${esc(start)} 00:00:00'`] : [];
 }
@@ -96,6 +108,12 @@ export async function POST(request: Request) {
     if (!municipalities.length || !nationalities.length || !["All", "Returnees", "Displaced"].includes(status) || !itemTypes.length || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
       return NextResponse.json({ error: "At least one municipality, nationality, status, item type, and a valid start date are required." }, { status: 400 });
     }
+    if (itemTypes.some(item => !allowedItemTypes.includes(item))) {
+      return NextResponse.json({ error: "One or more donation item types are invalid." }, { status: 400 });
+    }
+    if (status !== "Displaced" && itemTypes.some(item => displacedOnlyItems.has(item))) {
+      return NextResponse.json({ error: "Mattresses/sleeping bags, pillows, kitchen kits, and summer bedsheets are available only for Displaced records." }, { status: 400 });
+    }
 
     const returneeStatuses = ["returned", "partially_returned", "remained_at_origin", "relocated"];
     const municipalityIn = `current_municipality IN (${municipalities.map(value => `'${esc(value)}'`).join(",")})`;
@@ -124,7 +142,10 @@ export async function POST(request: Request) {
       const deliveries = await queryAll(deliveryConfig(), { where: deliveryWhere, outFields: "lookup_phone_nbr,lookup_id_number,type_items,delivered_date" });
       const phones = new Set(deliveries.map(f => normalizePhone(f.attributes.lookup_phone_nbr)).filter(Boolean));
       const ids = new Set(deliveries.map(f => normalizeId(f.attributes.lookup_id_number)).filter(Boolean));
-      results[itemType] = prepared.filter(person => {
+      const eligiblePeople = displacedOnlyItems.has(itemType)
+        ? prepared.filter(person => normalizeDamage(person.origin_home_damage) === "total_damage")
+        : prepared;
+      results[itemType] = eligiblePeople.filter(person => {
         const p1 = normalizePhone(person.phone_primary);
         const p2 = normalizePhone(person.phone_spouse);
         const id = normalizeId(person.id_number);
@@ -141,10 +162,13 @@ export async function POST(request: Request) {
         const summary = workbook.addWorksheet("GAP Summary", { views: [{ state: "frozen", ySplit: 9, xSplit: 1 }] });
         addMetadata(summary, municipalities, status, nationalities, itemTypes, startDate);
 
-        const hasFP = itemTypes.includes("Food parcel");
-        const hasHK = itemTypes.includes("hygiene equipment");
         const groups = status === "All" ? ["Returnees", "Displaced"] : [status];
-        const metricLabels = ["REGISTERED CDS", ...(hasFP ? ["FP RECEIVED", "FP GAP"] : []), ...(hasHK ? ["HK RECEIVED", "HK GAP"] : [])];
+        const metricLabels = ["REGISTERED CDS"];
+        for (const itemType of itemTypes) {
+          const code = itemCodes[itemType] || itemType;
+          if (displacedOnlyItems.has(itemType)) metricLabels.push(`${code} ELIGIBLE CDS`);
+          metricLabels.push(`${code} RECEIVED`, `${code} GAP`);
+        }
         const headerTop = 8;
         const headerBottom = 9;
         let column = 2;
@@ -159,8 +183,12 @@ export async function POST(request: Request) {
           metricLabels.forEach((label, index) => { summary.getCell(headerBottom, startCol + index).value = label; });
           column = endCol + 1;
         }
-        if (hasFP) { summary.mergeCells(headerTop, column, headerBottom, column); summary.getCell(headerTop, column).value = "TOTAL FP GAP"; column++; }
-        if (hasHK) { summary.mergeCells(headerTop, column, headerBottom, column); summary.getCell(headerTop, column).value = "TOTAL HK GAP"; column++; }
+        for (const itemType of itemTypes) {
+          const code = itemCodes[itemType] || itemType;
+          summary.mergeCells(headerTop, column, headerBottom, column);
+          summary.getCell(headerTop, column).value = `TOTAL ${code} GAP`;
+          column++;
+        }
         const lastCol = column - 1;
 
         for (const rowNo of [headerTop, headerBottom]) {
@@ -177,24 +205,21 @@ export async function POST(request: Request) {
 
         const buildRow = (municipality: string | null) => {
           const values: (string | number)[] = [municipality ?? "TOTAL"];
-          let totalFpGap = 0;
-          let totalHkGap = 0;
+          const totalGaps = new Map(itemTypes.map(itemType => [itemType, 0]));
           for (const group of groups) {
             const registeredRows = prepared.filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group));
             values.push(registeredRows.length);
-            if (hasFP) {
-              const gap = results["Food parcel"].filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group)).length;
-              values.push(registeredRows.length - gap, gap);
-              totalFpGap += gap;
-            }
-            if (hasHK) {
-              const gap = results["hygiene equipment"].filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group)).length;
-              values.push(registeredRows.length - gap, gap);
-              totalHkGap += gap;
+            for (const itemType of itemTypes) {
+              const eligibleRows = displacedOnlyItems.has(itemType)
+                ? registeredRows.filter(row => normalizeDamage(row.origin_home_damage) === "total_damage")
+                : registeredRows;
+              const gap = results[itemType].filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group)).length;
+              if (displacedOnlyItems.has(itemType)) values.push(eligibleRows.length);
+              values.push(eligibleRows.length - gap, gap);
+              totalGaps.set(itemType, (totalGaps.get(itemType) || 0) + gap);
             }
           }
-          if (hasFP) values.push(totalFpGap);
-          if (hasHK) values.push(totalHkGap);
+          for (const itemType of itemTypes) values.push(totalGaps.get(itemType) || 0);
           return values;
         };
 

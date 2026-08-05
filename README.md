@@ -57,3 +57,14 @@ Authentication errors identify the failing account as `CDS` or `Delivery`, the u
 - Phone matching ignores `+961`, `00961`, `961`, spaces, and leading zero formatting differences.
 - ID matching ignores leading zeros, so `00001234` matches `1234`.
 - Export filenames use municipality selection and item abbreviations, for example `Sour - FP-HK - GAP.xlsx`.
+
+## Displaced-only donation items
+
+The following item types are available only when **Displaced** is selected:
+
+- Mattresses/ sleeping bag
+- Pillows
+- Kitchen Kit
+- Summer Bedsheet
+
+They use the same phone, spouse-phone, and normalized ID matching rules as FP/HK. Their gap population is additionally restricted to CDS records where `origin_home_damage = total_damage`.

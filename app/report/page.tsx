@@ -6,10 +6,19 @@ const MUNICIPALITIES = [
   "Aabbassiye","Aaitit","Ain Baal","Arzoun","Bafliye","Barich","Batouliye","Bazouriye","Bedias","Bestiyat","Biyad Sour","Borj ech Chmali","Borj Rahhal","Bourghliye","Chaaitiyeh","Chabriha","Chahour","Chehabiye","Debaal","Deir Aamess","Deir Kifa","Deir Qanoun en Nahr","Deir Qanoun Ras el Ain","Derdghaiya","El Kleile","Halloussiye","Hannaouiye","Hanniye","Haumeiri","Hay Thakana","Housh","Jal Baher","Jannata","Jbal el Botm","Jouaiya","Knisse Sour","Maachouq","Maarake","Maaroub","Mafraa Aabbassiye","Mahrouneh","Malkeit es Sahel","Mansouri","Masaken","Mazraat Mechref","Mjadel","Mokhayam Borj ech Chmali","Mokhayam El Bass","Mokhayam Jal Baher","Mokhayam Qasmiye","Mokhayam Rachidiye","Naffakhiye","Ouadi Jilou","Qana","Ras el Ain","Rechkananey","Rmadiyeh","Salaa","Sammaaiye","Sharnai","Siddiqine","Sour","Srifa","Tair Debba","Tair Filsay","Toura","Ynouh","Zabqine","Ziraa"
 ];
 const STATUS_GROUPS = ["All", "Returnees", "Displaced"];
-const ITEM_TYPES = ["Food parcel","hygiene equipment"];
+const STANDARD_ITEM_TYPES = ["Food parcel", "hygiene equipment"];
+const DISPLACED_ONLY_ITEM_TYPES = ["Mattresses/ sleeping bag", "Pillows", "Kitchen Kit", "Summer Bedsheet"];
+const ITEM_TYPES = [...STANDARD_ITEM_TYPES, ...DISPLACED_ONLY_ITEM_TYPES];
 const NATIONALITIES = ["lebanese", "syrian", "palestinian", "other"];
 
-const ITEM_CODE: Record<string, string> = { "Food parcel": "FP", "hygiene equipment": "HK" };
+const ITEM_CODE: Record<string, string> = {
+  "Food parcel": "FP",
+  "hygiene equipment": "HK",
+  "Mattresses/ sleeping bag": "MSB",
+  "Pillows": "PIL",
+  "Kitchen Kit": "KK",
+  "Summer Bedsheet": "SB"
+};
 
 type ReportRow = Record<string, unknown>;
 type ReportData = { totalPeople: number; results: Record<string, ReportRow[]> };
@@ -152,14 +161,29 @@ export default function ReportPage() {
 
         <fieldset>
           <legend>Donation item types</legend>
-          <div className="checks">
-            {ITEM_TYPES.map(value => <label key={value}><input type="checkbox" checked={itemTypes.includes(value)} onChange={() => toggle(value, itemTypes, setItemTypes)} />{value}</label>)}
+          <div className="checks item-checks">
+            {ITEM_TYPES.map(value => {
+              const displacedOnly = DISPLACED_ONLY_ITEM_TYPES.includes(value);
+              const disabled = displacedOnly && status !== "Displaced";
+              return (
+                <label key={value} className={disabled ? "disabled-choice" : ""} title={disabled ? "Available only when Displaced is selected" : undefined}>
+                  <input type="checkbox" disabled={disabled} checked={itemTypes.includes(value)} onChange={() => toggle(value, itemTypes, setItemTypes)} />
+                  {value}{displacedOnly && <span className="choice-note">Displaced only</span>}
+                </label>
+              );
+            })}
           </div>
         </fieldset>
 
         <label className="wide">
           Displacement status
-          <select value={status} onChange={event => setStatus(event.target.value)}>
+          <select value={status} onChange={event => {
+            const nextStatus = event.target.value;
+            setStatus(nextStatus);
+            if (nextStatus !== "Displaced") {
+              setItemTypes(current => current.filter(item => !DISPLACED_ONLY_ITEM_TYPES.includes(item)));
+            }
+          }}>
             {STATUS_GROUPS.map(value => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
@@ -172,6 +196,11 @@ export default function ReportPage() {
         {status === "All" && (
           <div className="info wide">
             All includes every displacement status. No displacement-status or origin-municipality rule is applied.
+          </div>
+        )}
+        {status === "Displaced" && itemTypes.some(item => DISPLACED_ONLY_ITEM_TYPES.includes(item)) && (
+          <div className="warning wide">
+            Mattresses/sleeping bags, pillows, kitchen kits, and summer bedsheets validate currently displaced people only. Their GAP lists include only CDS records where origin home damage is total damage.
           </div>
         )}
 
