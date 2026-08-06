@@ -12,7 +12,7 @@ const itemCodes: Record<string, string> = {
   "Summer Bedsheet": "SB"
 };
 const allowedItemTypes = Object.keys(itemCodes);
-const displacedOnlyItems = new Set(["Mattresses/ sleeping bag", "Pillows", "Kitchen Kit", "Summer Bedsheet"]);
+const totalDamageItems = new Set(["Mattresses/ sleeping bag", "Pillows", "Kitchen Kit", "Summer Bedsheet"]);
 
 function esc(value: string) { return value.replace(/'/g, "''"); }
 function normalizePhone(value: unknown) {
@@ -111,9 +111,6 @@ export async function POST(request: Request) {
     if (itemTypes.some(item => !allowedItemTypes.includes(item))) {
       return NextResponse.json({ error: "One or more donation item types are invalid." }, { status: 400 });
     }
-    if (status !== "Displaced" && itemTypes.some(item => displacedOnlyItems.has(item))) {
-      return NextResponse.json({ error: "Mattresses/sleeping bags, pillows, kitchen kits, and summer bedsheets are available only for Displaced records." }, { status: 400 });
-    }
 
     const returneeStatuses = ["returned", "partially_returned", "remained_at_origin", "relocated"];
     const municipalityIn = `current_municipality IN (${municipalities.map(value => `'${esc(value)}'`).join(",")})`;
@@ -142,7 +139,7 @@ export async function POST(request: Request) {
       const deliveries = await queryAll(deliveryConfig(), { where: deliveryWhere, outFields: "lookup_phone_nbr,lookup_id_number,type_items,delivered_date" });
       const phones = new Set(deliveries.map(f => normalizePhone(f.attributes.lookup_phone_nbr)).filter(Boolean));
       const ids = new Set(deliveries.map(f => normalizeId(f.attributes.lookup_id_number)).filter(Boolean));
-      const eligiblePeople = displacedOnlyItems.has(itemType)
+      const eligiblePeople = totalDamageItems.has(itemType)
         ? prepared.filter(person => normalizeDamage(person.origin_home_damage) === "total_damage")
         : prepared;
       results[itemType] = eligiblePeople.filter(person => {
@@ -166,7 +163,7 @@ export async function POST(request: Request) {
         const metricLabels = ["REGISTERED CDS"];
         for (const itemType of itemTypes) {
           const code = itemCodes[itemType] || itemType;
-          if (displacedOnlyItems.has(itemType)) metricLabels.push(`${code} ELIGIBLE CDS`);
+          if (totalDamageItems.has(itemType)) metricLabels.push(`${code} ELIGIBLE CDS`);
           metricLabels.push(`${code} RECEIVED`, `${code} GAP`);
         }
         const headerTop = 8;
@@ -210,11 +207,11 @@ export async function POST(request: Request) {
             const registeredRows = prepared.filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group));
             values.push(registeredRows.length);
             for (const itemType of itemTypes) {
-              const eligibleRows = displacedOnlyItems.has(itemType)
+              const eligibleRows = totalDamageItems.has(itemType)
                 ? registeredRows.filter(row => normalizeDamage(row.origin_home_damage) === "total_damage")
                 : registeredRows;
               const gap = results[itemType].filter(row => (!municipality || String(row.current_municipality ?? "") === municipality) && isGroup(row, group)).length;
-              if (displacedOnlyItems.has(itemType)) values.push(eligibleRows.length);
+              if (totalDamageItems.has(itemType)) values.push(eligibleRows.length);
               values.push(eligibleRows.length - gap, gap);
               totalGaps.set(itemType, (totalGaps.get(itemType) || 0) + gap);
             }

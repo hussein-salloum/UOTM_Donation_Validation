@@ -67,4 +67,4 @@ The following item types are available only when **Displaced** is selected:
 - Kitchen Kit
 - Summer Bedsheet
 
-They use the same phone, spouse-phone, and normalized ID matching rules as FP/HK. Their gap population is additionally restricted to CDS records where `origin_home_damage = total_damage`.
+They are available for All, Returnees, and Displaced. They use the same phone, spouse-phone, and normalized ID matching rules as FP/HK. Their GAP-eligible CDS population is restricted to records where `origin_home_damage = total_damage`.

@@ -7,8 +7,8 @@ const MUNICIPALITIES = [
 ];
 const STATUS_GROUPS = ["All", "Returnees", "Displaced"];
 const STANDARD_ITEM_TYPES = ["Food parcel", "hygiene equipment"];
-const DISPLACED_ONLY_ITEM_TYPES = ["Mattresses/ sleeping bag", "Pillows", "Kitchen Kit", "Summer Bedsheet"];
-const ITEM_TYPES = [...STANDARD_ITEM_TYPES, ...DISPLACED_ONLY_ITEM_TYPES];
+const TOTAL_DAMAGE_ITEM_TYPES = ["Mattresses/ sleeping bag", "Pillows", "Kitchen Kit", "Summer Bedsheet"];
+const ITEM_TYPES = [...STANDARD_ITEM_TYPES, ...TOTAL_DAMAGE_ITEM_TYPES];
 const NATIONALITIES = ["lebanese", "syrian", "palestinian", "other"];
 
 const ITEM_CODE: Record<string, string> = {
@@ -162,28 +162,18 @@ export default function ReportPage() {
         <fieldset>
           <legend>Donation item types</legend>
           <div className="checks item-checks">
-            {ITEM_TYPES.map(value => {
-              const displacedOnly = DISPLACED_ONLY_ITEM_TYPES.includes(value);
-              const disabled = displacedOnly && status !== "Displaced";
-              return (
-                <label key={value} className={disabled ? "disabled-choice" : ""} title={disabled ? "Available only when Displaced is selected" : undefined}>
-                  <input type="checkbox" disabled={disabled} checked={itemTypes.includes(value)} onChange={() => toggle(value, itemTypes, setItemTypes)} />
-                  {value}{displacedOnly && <span className="choice-note">Displaced only</span>}
-                </label>
-              );
-            })}
+            {ITEM_TYPES.map(value => (
+              <label key={value}>
+                <input type="checkbox" checked={itemTypes.includes(value)} onChange={() => toggle(value, itemTypes, setItemTypes)} />
+                {value}
+              </label>
+            ))}
           </div>
         </fieldset>
 
         <label className="wide">
           Displacement status
-          <select value={status} onChange={event => {
-            const nextStatus = event.target.value;
-            setStatus(nextStatus);
-            if (nextStatus !== "Displaced") {
-              setItemTypes(current => current.filter(item => !DISPLACED_ONLY_ITEM_TYPES.includes(item)));
-            }
-          }}>
+          <select value={status} onChange={event => setStatus(event.target.value)}>
             {STATUS_GROUPS.map(value => <option key={value} value={value}>{value}</option>)}
           </select>
         </label>
@@ -198,9 +188,9 @@ export default function ReportPage() {
             All includes every displacement status. No displacement-status or origin-municipality rule is applied.
           </div>
         )}
-        {status === "Displaced" && itemTypes.some(item => DISPLACED_ONLY_ITEM_TYPES.includes(item)) && (
+        {itemTypes.some(item => TOTAL_DAMAGE_ITEM_TYPES.includes(item)) && (
           <div className="warning wide">
-            Mattresses/sleeping bags, pillows, kitchen kits, and summer bedsheets validate currently displaced people only. Their GAP lists include only CDS records where origin home damage is total damage.
+            For mattresses/sleeping bags, pillows, kitchen kits, and summer bedsheets, GAP eligibility includes only CDS records where origin home damage is total damage. This rule applies to the selected displacement status.
           </div>
         )}
 
